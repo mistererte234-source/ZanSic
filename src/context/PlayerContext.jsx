@@ -1,0 +1,243 @@
+import React, { createContext, useContext, useState, useRef, useEffect } from 'react';
+import { useLibrary } from './LibraryContext.jsx';
+
+const PlayerContext = createContext();
+
+export function PlayerProvider({ children }) {
+  const { addToHistory } = useLibrary();
+
+  const [currentTrack, setCurrentTrack] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(0.85);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isLooping, setIsLooping] = useState(false);
+  const [isShuffle, setIsShuffle] = useState(false);
+  const [queue, setQueue] = useState([]);
+  const [queueIndex, setQueueIndex] = useState(-1);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalTab, setModalTab] = useState('art');
+
+  const audioRef = useRef(new Audio());
+
+  // Setup HTML5 audio element
+  useEffect(() => {
+    const audio = audioRef.current;
+    audio.preload = 'auto';
+
+    const handleTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const handleLoadedMetadata = () => {
+      setDuration(audio.duration || 0);
+      setIsLoading(false);
+    };
+    const handleWaiting = () => setIsLoading(true);
+    const handlePlaying = () => {
+      setIsLoading(false);
+      setIsPlaying(true);
+    };
+    const handlePause = () => setIsPlaying(false);
+    const handleEnded = () => {
+      if (isLooping) {
+        audio.currentTime = 0;
+        audio.play().catch(console.error);
+      } else {
+        skipNext();
+      }
+    };
+    const handleError = (e) => {
+      console.error('[Audio Error]', e);
+      setIsLoading(false);
+      setIsPlaying(false);
+    };
+
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+    audio.addEventListener('waiting', handleWaiting);
+    audio.addEventListener('playing', handlePlaying);
+    audio.addEventListener('pause', handlePause);
+    audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('error', handleError);
+
+    return () => {
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      audio.removeEventListener('waiting', handleWaiting);
+      audio.removeEventListener('playing', handlePlaying);
+      audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('error', handleError);
+    };
+  }, [isLooping, queue, queueIndex, isShuffle]);
+
+  // Sync volume setiap kali berubah
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = isMuted ? 0 : volume;
+    }
+  }, [volume, isMuted]);
+
+  // MediaSession API
+  useEffect(() => {
+    if ('mediaSession' in navigator && currentTrack) {
+      try {
+        navigator.mediaSession.metadata = new window.MediaMetadata({
+          title: currentTrack.title || 'Unknown Title',
+          artist: currentTrack.artist || 'Unknown Artist',
+          album: currentTrack.album || 'ZanSic',
+          artwork: [
+            { src: currentTrack.thumbnail || '', sizes: '512x512', type: 'image/jpeg' }
+          ]
+        });
+
+        navigator.mediaSession.setActionHandler('play', () => togglePlay());
+        navigator.mediaSession.setActionHandler('pause', () => togglePlay());
+        navigator.mediaSession.setActionHandler('previoustrack', () => skipPrev());
+        navigator.mediaSession.setActionHandler('nexttrack', () => skipNext());
+        navigator.mediaSession.setActionHandler('seekto', (details) => {
+          if (details.seekTime !== undefined) seek(details.seekTime);
+        });
+      } catch {}
+    }
+  }, [currentTrack, queue, queueIndex]);
+
+  const playTrack = (track, newQueue = null, index = null) => {
+    if (!track || !track.id) return;
+
+    if (newQueue) {
+      setQueue(newQueue);
+      setQueueIndex(index !== null ? index : newQueue.findIndex(t => t.id === track.id));
+    } else if (!queue.some(t => t.id === track.id)) {
+      setQueue(prev => [...prev, track]);
+      setQueueIndex(queue.length);
+    }
+
+    setCurrentTrack(track);
+    addToHistory(track);
+    setIsLoading(true);
+    setCurrentTime(0);
+
+    const audio = audioRef.current;
+    audio.src = `/api/stream/${encodeURIComponent(track.id)}`;
+    audio.load();
+    audio.play().then(() => {
+      setIsPlaying(true);
+      setIsLoading(false);
+    }).catch(err => {
+      console.warn('Playback error:', err);
+      setIsLoading(false);
+    });
+
+    fetch(`/api/song/${encodeURIComponent(track.id)}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.upNext && data.upNext.length > 0) {
+          setQueue(prev => {
+            const existingIds = new Set(prev.map(p => p.id));
+            const fresh = data.upNext.filter(item => !existingIds.has(item.id));
+            return [...prev, ...fresh];
+          });
+        }
+      })
+      .catch(() => {});
+  };
+
+  const togglePlay = () => {
+    const audio = audioRef.current;
+    if (!currentTrack) return;
+    if (audio.paused) {
+      audio.play().catch(console.error);
+    } else {
+      audio.pause();
+    }
+  };
+
+  const seek = (time) => {
+    if (audioRef.current) {
+      audioRef.current.currentTime = time;
+      setCurrentTime(time);
+    }
+  };
+
+  const skipNext = () => {
+    if (queue.length === 0) return;
+    let nextIdx;
+    if (isShuffle) {
+      nextIdx = Math.floor(Math.random() * queue.length);
+    } else {
+      nextIdx = queueIndex + 1;
+      if (nextIdx >= queue.length) nextIdx = 0;
+    }
+    const nextTrack = queue[nextIdx];
+    if (nextTrack) {
+      setQueueIndex(nextIdx);
+      playTrack(nextTrack, queue, nextIdx);
+    }
+  };
+
+  const skipPrev = () => {
+    if (currentTime > 3) {
+      seek(0);
+      return;
+    }
+    if (queue.length === 0) return;
+    let prevIdx = queueIndex - 1;
+    if (prevIdx < 0) prevIdx = queue.length - 1;
+    const prevTrack = queue[prevIdx];
+    if (prevTrack) {
+      setQueueIndex(prevIdx);
+      playTrack(prevTrack, queue, prevIdx);
+    }
+  };
+
+  const addToQueue = (track) => {
+    if (!track) return;
+    setQueue(prev => [...prev, track]);
+  };
+
+  const removeFromQueue = (index) => {
+    setQueue(prev => prev.filter((_, i) => i !== index));
+    if (index === queueIndex) {
+      skipNext();
+    } else if (index < queueIndex) {
+      setQueueIndex(prev => prev - 1);
+    }
+  };
+
+  return (
+    <PlayerContext.Provider value={{
+      currentTrack,
+      isPlaying,
+      currentTime,
+      duration,
+      volume,
+      setVolume,
+      isMuted,
+      setIsMuted,
+      isLooping,
+      setIsLooping,
+      isShuffle,
+      setIsShuffle,
+      queue,
+      queueIndex,
+      isLoading,
+      isModalOpen,
+      setIsModalOpen,
+      modalTab,
+      setModalTab,
+      playTrack,
+      togglePlay,
+      seek,
+      skipNext,
+      skipPrev,
+      addToQueue,
+      removeFromQueue,
+      audioRef
+    }}>
+      {children}
+    </PlayerContext.Provider>
+  );
+}
+
+export const usePlayer = () => useContext(PlayerContext);
