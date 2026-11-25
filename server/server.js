@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
@@ -11,8 +12,11 @@ import {
   getSongInfo,
   getLyrics,
   debugSearch,
-  debugStream
+  debugStream,
+  resolveStream,
+  invalidateStream
 } from './yt.js';
+import { hasCache, cachePath, streamAndCache, downloadToCache, cacheStats } from './cache.js';
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -20,6 +24,12 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// ===== Resolver args (cookies / proxy opsional, untuk cache miss) =====
+const COOKIE_FILE = process.env.ZANSIC_COOKIES || '/etc/zansic/cookies.txt';
+const COOKIE_ARGS = fs.existsSync(COOKIE_FILE) ? ['--cookies', COOKIE_FILE] : [];
+const PROXY_ARGS = process.env.ZANSIC_PROXY ? ['--proxy', process.env.ZANSIC_PROXY] : [];
+const YTDLP_ARGS = [...COOKIE_ARGS, ...PROXY_ARGS];
 
 const PIPED_INSTANCES = [
   'https://pipedapi.kavin.rocks',
@@ -87,7 +97,7 @@ app.get('/api/search', async (req, res) => {
 
 app.get('/api/suggestions', async (req, res) => {
   const query = req.query.q;
-  if (!query) return res.json({ suggestions: [] });
+  if (!query || query.length < 2) return res.json({ suggestions: [] });
   try {
     const suggestions = await getSearchSuggestions(query);
     res.json({ suggestions });
@@ -149,6 +159,7 @@ async function tryPiped(videoId) {
 async function tryYtDlpDirect(videoId) {
   try {
     const { stdout } = await execFileAsync('yt-dlp', [
+      ...YTDLP_ARGS,
       '-f', 'bestaudio/best',
       '-g',
       '--no-playlist',
@@ -168,6 +179,7 @@ function streamViaPipe(videoId, res, req) {
   return new Promise((resolve, reject) => {
     console.log(`[yt-dlp] Fallback to pipe mode`);
     const ytdlp = spawn('yt-dlp', [
+      ...YTDLP_ARGS,
       '-f', 'bestaudio/best',
       '-o', '-',
       '--no-playlist',
@@ -236,35 +248,49 @@ async function proxyDirect(streamUrl, req, res) {
   res.end();
 }
 
+// ===== STREAM: cache-first hybrid =====
 app.get('/api/stream/:id', async (req, res) => {
   const trackId = req.params.id;
+  const videoId = trackId.replace(/^(it_|au_)/, '').replace(/[^A-Za-z0-9_-]/g, '');
   try {
-    let videoId = trackId.replace(/^(it_|au_)/, '');
-    console.log(`[Stream] ${videoId}`);
+    // 0. CACHE HIT: instant, seek bebas, bebas macet selamanya
+    if (hasCache(videoId)) {
+      console.log(`[Stream] ${videoId} CACHE HIT`);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.sendFile(cachePath(videoId)); // send() otomatis handle Range/206
+    }
 
-    // 1. Piped
-    let stream = await tryPiped(videoId);
+    // 1. CACHE MISS: stream-through yt-dlp (play live + nulis cache)
+    try {
+      await streamAndCache(videoId, req, res, YTDLP_ARGS);
+      return;
+    } catch (err) {
+      console.log(`[cache-miss yt-dlp] ${err.message}`);
+      if (res.headersSent) { res.destroy(); return; }
+    }
+
+    // 2. InnerTube multi-klien (engine yt.js)
+    try {
+      const entry = await resolveStream(trackId);
+      await proxyDirect(entry.url, req, res);
+      return;
+    } catch (err) {
+      console.log(`[InnerTube] ${err.message}`);
+      invalidateStream(trackId);
+      if (res.headersSent) { res.destroy(); return; }
+    }
+
+    // 3. Piped (cadangan, bukan lagi jalur pertama -> tidak ada stall 24s)
+    const stream = await tryPiped(videoId);
     if (stream) {
-      try {
-        await proxyDirect(stream.url, req, res);
-        return;
-      } catch (err) {
+      try { await proxyDirect(stream.url, req, res); return; }
+      catch (err) {
         console.log(`[Piped] proxy failed: ${err.message}`);
+        if (res.headersSent) { res.destroy(); return; }
       }
     }
 
-    // 2. yt-dlp direct
-    stream = await tryYtDlpDirect(videoId);
-    if (stream) {
-      try {
-        await proxyDirect(stream.url, req, res);
-        return;
-      } catch (err) {
-        console.log(`[yt-dlp] direct proxy failed: ${err.message}`);
-      }
-    }
-
-    // 3. Fallback pipe
+    // 4. Fallback pipe polos
     await streamViaPipe(videoId, res, req);
   } catch (err) {
     console.error(`[Stream Error] ${trackId}:`, err.message);
@@ -272,6 +298,16 @@ app.get('/api/stream/:id', async (req, res) => {
     else res.destroy();
   }
 });
+
+// ===== Prefetch & cache management =====
+app.post('/api/prefetch/:id', (req, res) => {
+  const id = req.params.id.replace(/^(it_|au_)/, '');
+  downloadToCache(id, YTDLP_ARGS)
+    .then(() => res.json({ ok: true, cached: true }))
+    .catch((e) => res.status(502).json({ error: e.message }));
+});
+
+app.get('/api/cache/stats', (req, res) => res.json(cacheStats()));
 
 // Debug
 app.get('/api/debug/search', async (req, res) => {
@@ -298,5 +334,5 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 ZanSic Server running on http://localhost:${PORT}`);
+  console.log(`🚀 ZanSic Server (cache-first) running on http://localhost:${PORT}`);
 });
