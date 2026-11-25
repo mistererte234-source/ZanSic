@@ -101,6 +101,20 @@ export default function Sidebar({ activeTab, setActiveTab }) {
         <SidebarCalendar />
       </div>
 
+      {/* Tombol Aktifkan SSH Tunnel */}
+      <div className="px-2 mb-3">
+        <a
+          href="zansictunnel://start"
+          className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-gradient-to-r from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 hover:border-emerald-400 text-emerald-300 hover:text-white text-xs font-semibold transition-all group shadow-lg shadow-emerald-500/5"
+          title="Klik untuk mengaktifkan SSH Tunnel di PC ini"
+        >
+          <svg className="w-4 h-4 group-hover:animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          <span>Aktifkan Tunnel</span>
+        </a>
+      </div>
+
       {/* Subtle Sidebar Watermark */}
       <div className="pt-4 border-t border-white/[0.08] px-2 text-center">
         <a
