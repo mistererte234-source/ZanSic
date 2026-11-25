@@ -6,9 +6,7 @@ export default function ZandevFooter() {
     <footer className="w-full mt-16 mb-28 md:mb-24 px-6 text-center">
       <div className="max-w-4xl mx-auto py-6 px-8 rounded-2xl glass-card border border-white/10 backdrop-blur-xl flex flex-col sm:flex-row items-center justify-between gap-4 transition-all duration-300 hover:border-white/20">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-[#FA2D48] via-purple-600 to-blue-500 flex items-center justify-center shadow-lg shadow-[#FA2D48]/20">
-            <Sparkles className="w-4 h-4 text-white animate-pulse" />
-          </div>
+          <img src="/logo-mark.png" alt="ZanSic" className="w-9 h-9 object-contain drop-shadow-[0_0_10px_rgba(47,107,255,0.45)]" />
           <div className="text-left">
             <h4 className="text-sm font-bold text-white tracking-wide">ZanSic Music</h4>
             <p className="text-xs text-zinc-400">Next-gen iOS 18 Web Experience</p>
