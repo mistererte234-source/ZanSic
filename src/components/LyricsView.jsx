@@ -1,115 +1,82 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { usePlayer } from '../context/PlayerContext.jsx';
+import { useEffect, useRef } from 'react';
+import { usePlayer } from '../context/PlayerContext';
 
 export default function LyricsView() {
-  const { currentTrack, currentTime, duration } = usePlayer();
+  const { currentTrack, currentTime, lyrics } = usePlayer();
   const containerRef = useRef(null);
-  const [lyrics, setLyrics] = useState({ synced: [], text: '', hasSynced: false });
-  const [activeIndex, setActiveIndex] = useState(-1);
-  const userScrolled = useRef(false);
-  const scrollTimeout = useRef(null);
+  const activeRef = useRef(null);
 
-  // Fetch lyrics
+  // Cari index baris yang sedang aktif
+  const activeIndex = lyrics?.findIndex((line, i) => {
+    const next = lyrics[i + 1];
+    return currentTime >= line.time && (!next || currentTime < next.time);
+  }) ?? -1;
+
+  // Auto-scroll ke baris aktif
   useEffect(() => {
-    if (!currentTrack) return;
-    setLyrics({ synced: [], text: '', hasSynced: false });
-    setActiveIndex(-1);
+    if (activeIndex < 0 || !activeRef.current || !containerRef.current) return;
 
-    fetch(`/api/lyrics/${currentTrack.id}?title=${encodeURIComponent(currentTrack.title || '')}&artist=${encodeURIComponent(currentTrack.artist || '')}`)
-      .then(r => r.json())
-      .then(data => {
-        let synced = data.synced || [];
-        
-        // Estimated sync for plain lyrics
-        if (!synced.length && data.text && duration > 10) {
-          const lines = data.text.split('\n').filter(l => l.trim());
-          const lineDuration = duration / Math.max(lines.length, 1);
-          synced = lines.map((text, i) => ({
-            time: i * lineDuration,
-            text: text.trim()
-          }));
-        }
+    const container = containerRef.current;
+    const active = activeRef.current;
 
-        setLyrics({
-          synced,
-          text: data.text || '',
-          hasSynced: !!data.synced?.length
-        });
-      })
-      .catch(() => {});
-  }, [currentTrack, duration]);
+    const containerHeight = container.clientHeight;
+    const activeTop = active.offsetTop;
+    const activeHeight = active.clientHeight;
 
-  // Find active line
-  useEffect(() => {
-    if (!lyrics.synced.length) return;
-    
-    let idx = lyrics.synced.findIndex((line, i) => {
-      const next = lyrics.synced[i + 1];
-      return currentTime >= line.time && (!next || currentTime < next.time);
+    // Scroll supaya baris aktif di tengah
+    const targetScroll = activeTop - containerHeight / 2 + activeHeight / 2;
+
+    container.scrollTo({
+      top: Math.max(0, targetScroll),
+      behavior: 'smooth',
     });
-    
-    if (idx === -1 && currentTime > 0) idx = 0;
-    setActiveIndex(idx);
-  }, [currentTime, lyrics.synced]);
-
-  // Auto scroll
-  useEffect(() => {
-    if (activeIndex < 0 || !containerRef.current || userScrolled.current) return;
-    
-    const el = containerRef.current.children[activeIndex];
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
   }, [activeIndex]);
 
-  // Detect user scroll
-  const handleScroll = () => {
-    userScrolled.current = true;
-    clearTimeout(scrollTimeout.current);
-    scrollTimeout.current = setTimeout(() => {
-      userScrolled.current = false;
-    }, 3000);
-  };
-
-  if (!lyrics.synced.length && !lyrics.text) {
-    return (
-      <div className="h-full flex items-center justify-center text-zinc-500">
-        Lirik tidak tersedia
-      </div>
-    );
-  }
+  if (!currentTrack) return null;
 
   return (
-    <div 
-      ref={containerRef}
-      onScroll={handleScroll}
-      className="h-full overflow-y-auto px-8 py-16 space-y-8 text-center scrollbar-thin scrollbar-thumb-zinc-700"
-    >
-      {lyrics.synced.map((line, i) => {
-        const isActive = i === activeIndex;
-        const isPast = i < activeIndex;
-        
-        return (
-          <p
-            key={i}
-            className={`transition-all duration-500 ease-out ${
-              isActive 
-                ? 'text-white text-3xl font-bold scale-105' 
-                : isPast
-                ? 'text-zinc-600 text-xl'
-                : 'text-zinc-500 text-xl'
-            }`}
-          >
-            {line.text || '♪'}
-          </p>
-        );
-      })}
-      
-      {!lyrics.hasSynced && lyrics.synced.length > 0 && (
-        <p className="text-xs text-zinc-600 mt-12">
-          Estimated timing
-        </p>
-      )}
+    <div className="flex flex-col h-full bg-gradient-to-b from-zinc-900/80 to-black">
+      {/* Header */}
+      <div className="pt-8 pb-4 text-center shrink-0">
+        <p className="text-xs tracking-widest text-white/50 uppercase">Now Playing</p>
+        <h2 className="text-lg font-semibold text-white mt-1">{currentTrack.title}</h2>
+      </div>
+
+      {/* Lyrics container */}
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-y-auto px-6 pb-32 scrollbar-hide"
+        style={{ scrollBehavior: 'smooth' }}
+      >
+        <div className="max-w-md mx-auto space-y-6 py-20">
+          {lyrics && lyrics.length > 0 ? (
+            lyrics.map((line, i) => {
+              const isActive = i === activeIndex;
+              const isPast = i < activeIndex;
+
+              return (
+                <p
+                  key={i}
+                  ref={isActive ? activeRef : null}
+                  className={`
+                    text-center transition-all duration-300 leading-relaxed
+                    ${isActive 
+                      ? 'text-white text-2xl md:text-3xl font-semibold scale-105' 
+                      : isPast 
+                        ? 'text-white/30 text-lg' 
+                        : 'text-white/40 text-lg'
+                    }
+                  `}
+                >
+                  {line.text}
+                </p>
+              );
+            })
+          ) : (
+            <p className="text-center text-white/40 text-lg">Lirik tidak tersedia</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
