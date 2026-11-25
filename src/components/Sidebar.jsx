@@ -1,4 +1,5 @@
 import React from 'react';
+import { Home, Search, Library, Heart, ListMusic, Compass, Radio } from 'lucide-react';
 import { useLibrary } from '../context/LibraryContext.jsx';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import SidebarCalendar from './SidebarCalendar.jsx';
