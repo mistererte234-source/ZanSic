@@ -129,7 +129,7 @@ app.get('/api/song/:id', async (req, res) => {
 
 app.get('/api/lyrics/:id', async (req, res) => {
   try {
-    const lyrics = await getLyrics(req.params.id, req.query.title || '', req.query.artist || '');
+    const lyrics = await getLyrics(req.params.id, req.query.title || '', req.query.artist || '', req.query.duration || 0, req.query.album || '');
     res.json(lyrics);
   } catch {
     res.json({ hasLyrics: false, text: '', synced: [] });

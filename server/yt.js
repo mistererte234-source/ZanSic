@@ -281,36 +281,71 @@ function parseLrc(lrcText) {
   return parsed;
 }
 
-export async function getLyrics(trackId, title = '', artist = '') {
-  const cached = trackMetaCache.get(trackId);
-  const cleanTitle = (title || cached?.title || '').replace(/\(.*?\)|\[.*?\]/g, '').trim();
-  const cleanArtist = (artist || cached?.artist || '').replace(/Unknown Artist/i, '').split(',')[0].trim();
+// Dice coefficient buat similarity judul/artist
+function dice(a, b) {
+  if (!a || !b) return 0;
+  const norm = s => s.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, '').replace(/\s+/g, ' ').trim();
+  a = norm(a); b = norm(b);
+  if (a === b) return 1;
+  const bg = t => { const g = []; for (let i = 0; i < t.length - 1; i++) g.push(t.slice(i, i + 2)); return g; };
+  const A = bg(a), B = bg(b);
+  const map = new Map(); A.forEach(x => map.set(x, (map.get(x) || 0) + 1));
+  let inter = 0; B.forEach(x => { const c = map.get(x); if (c > 0) { inter++; map.set(x, c - 1); } });
+  return (2 * inter) / ((A.length + B.length) || 1);
+}
 
+export async function getLyrics(trackId, title = '', artist = '', duration = 0, album = '') {
+  const cached = trackMetaCache.get(trackId);
+  const cleanTitle = (title || cached?.title || '')
+    .replace(/\(.*?\)|\[.*?\]/g, '')
+    .replace(/\b(official|audio|video|lyrics?|visualizer|remaster(ed)?|hd|hq)\b/gi, '')
+    .replace(/\bremix\s*edit\b/gi, '')
+    .replace(/\b\d{4}\b/g, '')
+    .replace(/\s+/g, ' ').trim();
+  const cleanArtist = (artist || cached?.artist || '')
+    .replace(/Unknown Artist/i, '').split(',')[0].trim();
+  const dur = Math.round(Number(duration) || 0);
+  const empty = { hasLyrics: false, text: '', synced: [] };
+
+  // (1) EXACT match — paling akurat, butuh artist valid
+  if (cleanTitle && cleanArtist) {
+    try {
+      const p = new URLSearchParams({ trackName: cleanTitle, artistName: cleanArtist, albumName: album || '', duration: String(dur || 0) });
+      const r = await fetch(`https://lrclib.net/api/get?${p}`, { headers: { 'User-Agent': 'ZanSic/1.0' } });
+      if (r.ok) {
+        const d = await r.json();
+        if (d && (d.syncedLyrics || d.plainLyrics)) {
+          const synced = d.syncedLyrics ? parseLrc(d.syncedLyrics) : [];
+          return { hasLyrics: true, text: d.plainLyrics || synced.map(s => s.text).join('\n'), synced, footer: 'Synchronized Lyrics via LRCLIB', matched: { artist: d.artistName, track: d.trackName } };
+        }
+      }
+    } catch (e) { console.error('[LRCLIB get]', e.message); }
+  }
+
+  // (2) SEARCH fallback — dengan guard similarity + durasi
   if (cleanTitle) {
     try {
-      const q = `${cleanArtist} ${cleanTitle}`.trim();
-      const res = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`);
-      if (res.ok) {
-        const list = await res.json();
-        if (Array.isArray(list) && list.length > 0) {
-          const bestSynced = list.find((item) => item.syncedLyrics);
-          const picked = bestSynced || list.find((item) => item.plainLyrics);
-          if (picked) {
-            const synced = bestSynced ? parseLrc(bestSynced.syncedLyrics) : [];
-            return {
-              hasLyrics: true,
-              text: picked.plainLyrics || synced.map((s) => s.text).join('\n'),
-              synced,
-              footer: 'Synchronized Lyrics via LRCLIB'
-            };
+      const q = (cleanArtist ? cleanArtist + ' ' : '') + cleanTitle;
+      const r = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`, { headers: { 'User-Agent': 'ZanSic/1.0' } });
+      if (r.ok) {
+        const list = await r.json();
+        if (Array.isArray(list)) {
+          const cand = list.map(it => {
+            const sim = dice(cleanTitle, (it.trackName || '').replace(/\(.*?\)|\[.*?\]/g, ''));
+            const dOk = !dur || !it.duration || Math.abs(it.duration - dur) <= 20;
+            const aOk = !cleanArtist || !it.artistName || dice(cleanArtist, it.artistName) >= 0.5;
+            return { it, sim, pass: dOk && aOk && sim >= 0.5 };
+          }).filter(x => x.pass).sort((a, b) => b.sim - a.sim);
+          const best = cand[0]?.it;
+          if (best && (best.syncedLyrics || best.plainLyrics)) {
+            const synced = best.syncedLyrics ? parseLrc(best.syncedLyrics) : [];
+            return { hasLyrics: true, text: best.plainLyrics || synced.map(s => s.text).join('\n'), synced, footer: 'Synchronized Lyrics via LRCLIB', matched: { artist: best.artistName, track: best.trackName } };
           }
         }
       }
-    } catch (err) {
-      console.error('[LRCLIB] Error:', err.message);
-    }
+    } catch (e) { console.error('[LRCLIB search]', e.message); }
   }
-  return { hasLyrics: false, text: '', synced: [] };
+  return empty;
 }
 
 // ---------- 6. Resolve URL audio full ----------
